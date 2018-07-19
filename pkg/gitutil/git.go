@@ -15,39 +15,60 @@
 package gitutil
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"os"
-	osexec "os/exec"
-	"path/filepath"
-	"strings"
 
 	"github.com/golang/glog"
+	"gopkg.in/src-d/go-git.v4"
 )
 
 // EnsureCloned will clone into the destination path, otherwise will return no error.
 func EnsureCloned(uri, destinationPath string) error {
-	if ok, err := IsGitCloned(destinationPath); err != nil {
-		return err
-	} else if !ok {
-		return exec("", "clone", "-v", uri, destinationPath)
+	co := &git.CloneOptions{URL: uri}
+	if glog.V(2) {
+		co.Progress = os.Stderr
 	}
+	if _, err := git.PlainClone(destinationPath, false, co); err == git.ErrRepositoryAlreadyExists {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("failed to clone repo, err: %v", err)
+	}
+
 	return nil
 }
 
 // IsGitCloned will test if the path is a git dir.
 func IsGitCloned(gitPath string) (bool, error) {
-	f, err := os.Stat(filepath.Join(gitPath, ".git"))
-	if os.IsNotExist(err) {
+	_, err := git.PlainOpen(gitPath)
+	if err == git.ErrRepositoryNotExists {
 		return false, nil
 	}
-	return err == nil && f.IsDir(), err
+	return err == nil, err
 }
 
 // update will fetch origin and set HEAD to origin/HEAD.
 func update(destinationPath string) error {
-	return exec(destinationPath, "pull", "--ff-only", "-v")
+	g, err := git.PlainOpen(destinationPath)
+	if err != nil {
+		return fmt.Errorf("failed to open git repo, err: %v", err)
+	}
+
+	w, err := g.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get the git worktree, err: %v", err)
+	}
+
+	po := &git.PullOptions{RemoteName: "origin"}
+	if glog.V(2) {
+		po.Progress = os.Stderr
+	}
+
+	if err = w.Pull(po); err == git.NoErrAlreadyUpToDate {
+		glog.V(2).Infof("Already Up To Date")
+	} else if err != nil {
+		return fmt.Errorf("failed to fetch the origin, err: %v", err)
+	}
+	return nil
 }
 
 // EnsureUpdated will ensure the destination path exsists and is up to date.
@@ -56,20 +77,4 @@ func EnsureUpdated(uri, destinationPath string) error {
 		return err
 	}
 	return update(destinationPath)
-}
-
-func exec(pwd string, args ...string) error {
-	glog.V(4).Infof("Going to run git %s", strings.Join(args, " "))
-	cmd := osexec.Command("git", args...)
-	cmd.Dir = pwd
-	buf := bytes.Buffer{}
-	var w io.Writer = &buf
-	if glog.V(2) {
-		w = io.MultiWriter(w, os.Stderr)
-	}
-	cmd.Stdout, cmd.Stderr = w, w
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("command err=%q output=%q", err, buf.String())
-	}
-	return nil
 }
